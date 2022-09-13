@@ -377,13 +377,13 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
 {
     PyObject* array;
     PyObject* begining;
-    PyObject* end;
+    PyObject* count;
 
-    if (!PyArg_ParseTuple(args, "Oii", &array,&begining,&end))
+    if (!PyArg_ParseTuple(args, "OOO", &array,&begining,&count))
         return NULL;
 
     Py_buffer buffer;
-    int64_t l_begining,l_end,itemsize;
+    int64_t l_begining,l_count,itemsize;
     char* src;
 
     if (!PyObject_GetBuffer(array, &buffer, PyBUF_ND)) {
@@ -391,8 +391,9 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
     } else {
         // Nothing we can use
         mc_err(UnsupportedInputFormat);
-        return -1;
+        return NULL;
     }
+    
 
     PyObject* as_long_beg = PyNumber_Long(begining);
     PyErr_Clear();
@@ -403,27 +404,29 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
     {
         // Nothing we can use
         mc_err(UnsupportedInputFormat);
-        return -1;
+        return NULL;
     }
 
-    PyObject* as_long_end = PyNumber_Long(end);
+    
+    PyObject* as_long_count = PyNumber_Long(count);
     PyErr_Clear();
-    if (as_long_end != NULL) {
+    if (as_long_count != NULL) {
         // Yes
-        l_end = PyLong_AsLongLong(as_long_end);
+        l_count = PyLong_AsLongLong(as_long_count);
     } else 
     {
         // Nothing we can use
         mc_err(UnsupportedInputFormat);
-        return -1;
+        return NULL;
     }
 
     itemsize = buffer.itemsize;
- 
-    if (mc_err(mc_sw_buf_modify(&(self->dev_obj->dev_handle), l_begining,l_end,itemsize, src, &(self->buf_handle)))) {
-        return -1;
+    PySys_WriteStdout("l_begining,l_count,itemsize %i %i %i\n",l_begining,l_count,itemsize);
+    if (mc_err(mc_sw_buf_modify(&(self->dev_obj->dev_handle), l_begining,l_count,itemsize, src, &(self->buf_handle)))) {
+        return  NULL;
     }
-    return 0;
+    PyBuffer_Release(&buffer);
+     Py_RETURN_NONE;
 
 }
 
@@ -874,7 +877,7 @@ void define_device_info_type() {
 PyMODINIT_FUNC
 PyInit_metalcompute(void)
 {
-    //printf("(creating stdout)\n"); // Uncomment if debugging swift code with print statements
+    printf("(creating stdout)\n"); // Uncomment if debugging swift code with print statements
 
     if (PyType_Ready(&DeviceType) < 0)
         return NULL;

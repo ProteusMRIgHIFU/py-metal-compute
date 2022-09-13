@@ -447,7 +447,7 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
 @_cdecl("mc_sw_buf_modify") public func mc_sw_buf_modify(
         dev_handle: UnsafePointer<mc_dev_handle>, 
         l_beg:Int64,
-        l_end:Int64,
+        l_count:Int64,
         l_itemsize:Int64,
         src_opt: UnsafeRawPointer?,
         buf_handle: UnsafeMutablePointer<mc_buf_handle>) -> RetCode {
@@ -455,14 +455,13 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     guard let buf = sw_dev.bufs[buf_handle[0].id] else { return BufferNotFound }
     guard let src = src_opt else { return BufferNotFound }
-    let ll = Int((l_end-l_beg)*l_itemsize)
+    let ll = Int(l_count*l_itemsize)
     buf.buf.contents().advanced(by:(Int(l_beg*l_itemsize))).copyMemory(from: src, byteCount:ll)
     let r : Range = (Int(l_beg*l_itemsize))..<(Int(l_beg*l_itemsize) + ll )
     buf.buf.didModifyRange(r)
 
     return Success; 
 }
-
 @_cdecl("mc_sw_buf_close") public func mc_sw_buf_close(
         dev_handle: UnsafePointer<mc_dev_handle>,
         buf_handle: UnsafeMutablePointer<mc_buf_handle>) -> RetCode {
