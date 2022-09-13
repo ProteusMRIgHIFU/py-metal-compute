@@ -372,12 +372,74 @@ Device_buffer(Device* self, PyObject* args, PyObject* kwargs)
     return newBufferObj;
 }
 
+static PyObject *
+Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
+{
+    PyObject* array;
+    PyObject* begining;
+    PyObject* end;
+
+    if (!PyArg_ParseTuple(args, "Oii", &array,&begining,&end))
+        return NULL;
+
+    Py_buffer buffer;
+    int64_t l_begining,l_end,itemsize;
+    char* src;
+
+    if (!PyObject_GetBuffer(array, &buffer, PyBUF_ND)) {
+        src = buffer.buf;
+    } else {
+        // Nothing we can use
+        mc_err(UnsupportedInputFormat);
+        return -1;
+    }
+
+    PyObject* as_long_beg = PyNumber_Long(begining);
+    PyErr_Clear();
+    if (as_long_beg != NULL) {
+        // Yes
+        l_begining = PyLong_AsLongLong(as_long_beg);
+    } else 
+    {
+        // Nothing we can use
+        mc_err(UnsupportedInputFormat);
+        return -1;
+    }
+
+    PyObject* as_long_end = PyNumber_Long(end);
+    PyErr_Clear();
+    if (as_long_end != NULL) {
+        // Yes
+        l_end = PyLong_AsLongLong(as_long_end);
+    } else 
+    {
+        // Nothing we can use
+        mc_err(UnsupportedInputFormat);
+        return -1;
+    }
+
+    itemsize = buffer.itemsize;
+ 
+    if (mc_err(mc_sw_buf_modify(&(self->dev_obj->dev_handle), l_begining,l_end,itemsize, src, &(self->buf_handle)))) {
+        return -1;
+    }
+    return 0;
+
+}
+
 static PyMethodDef Device_methods[] = {
     {"kernel", (PyCFunction) Device_kernel, METH_VARARGS,
      "Compile a kernel for this device"
     },
     {"buffer", (PyCFunction) Device_buffer, METH_VARARGS,
      "Create a buffer for this device"
+    },
+    {NULL}  /* Sentinel */
+};
+
+static PyMethodDef Buffer_methods[] = {
+    {"modify", (PyCFunction) Buffer_modify, METH_VARARGS,
+     "modify buffer content"
     },
     {NULL}  /* Sentinel */
 };
@@ -645,6 +707,7 @@ static PyTypeObject BufferType = {
     .tp_dealloc = (destructor) Buffer_dealloc,
     .tp_str = (reprfunc) Buffer_str,
     .tp_as_buffer = &BufferProcs,
+    .tp_methods = Buffer_methods,
 };
 
 int to_buffer(PyObject* possible_buffer, Device* dev, Buffer** buffer) {
