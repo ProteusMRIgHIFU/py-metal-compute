@@ -71,3 +71,5 @@ RetCode mc_sw_buf_close(const mc_dev_handle* dev_handle, mc_buf_handle* buf_hand
 RetCode mc_sw_run_open(const mc_dev_handle* dev_handle, const mc_kern_handle* kern_handle,
                      const mc_fn_handle* fn_handle, mc_run_handle* run_handle);
 RetCode mc_sw_run_close(const mc_run_handle* run_handle);
+RetCode mc_sw_init_single_encoder(const mc_dev_handle* dev_handle);
+RetCode mc_sw_commit_single_encoder(const mc_dev_handle* dev_handle);

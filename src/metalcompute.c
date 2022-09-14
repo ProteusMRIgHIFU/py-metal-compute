@@ -373,6 +373,30 @@ Device_buffer(Device* self, PyObject* args, PyObject* kwargs)
 }
 
 static PyObject *
+Device_init_single_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
+{
+    
+    if (mc_err(mc_sw_init_single_encoder(&(self->dev_handle)))) {
+        return  NULL;
+    }
+   
+     Py_RETURN_NONE;
+
+}
+
+static PyObject *
+Device_commit_single_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
+{
+    
+    if (mc_err(mc_sw_commit_single_encoder(&(self->dev_handle)))) {
+        return  NULL;
+    }
+   
+     Py_RETURN_NONE;
+
+}
+
+static PyObject *
 Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
 {
     PyObject* array;
@@ -394,7 +418,6 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
         return NULL;
     }
     
-
     PyObject* as_long_beg = PyNumber_Long(begining);
     PyErr_Clear();
     if (as_long_beg != NULL) {
@@ -407,7 +430,6 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
         return NULL;
     }
 
-    
     PyObject* as_long_count = PyNumber_Long(count);
     PyErr_Clear();
     if (as_long_count != NULL) {
@@ -421,7 +443,7 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
     }
 
     itemsize = buffer.itemsize;
-    PySys_WriteStdout("l_begining,l_count,itemsize %i %i %i\n",l_begining,l_count,itemsize);
+    // PySys_WriteStdout("l_begining,l_count,itemsize %i %i %i\n",l_begining,l_count,itemsize);
     if (mc_err(mc_sw_buf_modify(&(self->dev_obj->dev_handle), l_begining,l_count,itemsize, src, &(self->buf_handle)))) {
         return  NULL;
     }
@@ -436,6 +458,12 @@ static PyMethodDef Device_methods[] = {
     },
     {"buffer", (PyCFunction) Device_buffer, METH_VARARGS,
      "Create a buffer for this device"
+    },
+    {"init_single_command_buffer", (PyCFunction) Device_init_single_command_buffer, METH_VARARGS,
+     "initialize single command buffer"
+    },
+    {"commit_single_command_buffer", (PyCFunction) Device_commit_single_command_buffer, METH_VARARGS,
+     "commit single command buffer"
     },
     {NULL}  /* Sentinel */
 };
