@@ -373,10 +373,10 @@ Device_buffer(Device* self, PyObject* args, PyObject* kwargs)
 }
 
 static PyObject *
-Device_init_single_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
+Device_init_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
 {
     
-    if (mc_err(mc_sw_init_single_encoder(&(self->dev_handle)))) {
+    if (mc_err(mc_sw_init_command_buffer(&(self->dev_handle)))) {
         return  NULL;
     }
    
@@ -385,13 +385,23 @@ Device_init_single_command_buffer(Device* self, PyObject* args, PyObject* kwargs
 }
 
 static PyObject *
-Device_commit_single_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
+Device_commit_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
 {
     
-    if (mc_err(mc_sw_commit_single_encoder(&(self->dev_handle)))) {
+    if (mc_err(mc_sw_commit_command_buffer(&(self->dev_handle)))) {
         return  NULL;
     }
-   
+     Py_RETURN_NONE;
+
+}
+
+static PyObject *
+Device_wait_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
+{
+    
+    if (mc_err(mc_sw_wait_command_buffer(&(self->dev_handle)))) {
+        return  NULL;
+    }
      Py_RETURN_NONE;
 
 }
@@ -459,11 +469,14 @@ static PyMethodDef Device_methods[] = {
     {"buffer", (PyCFunction) Device_buffer, METH_VARARGS,
      "Create a buffer for this device"
     },
-    {"init_single_command_buffer", (PyCFunction) Device_init_single_command_buffer, METH_VARARGS,
-     "initialize single command buffer"
+    {"init_command_buffer", (PyCFunction) Device_init_command_buffer, METH_VARARGS,
+     "initialize command buffer"
     },
-    {"commit_single_command_buffer", (PyCFunction) Device_commit_single_command_buffer, METH_VARARGS,
-     "commit single command buffer"
+    {"commit_command_buffer", (PyCFunction) Device_commit_command_buffer, METH_VARARGS,
+     "commit command buffer"
+    },
+    {"wait_command_buffer", (PyCFunction) Device_wait_command_buffer, METH_VARARGS,
+     "wait command buffer"
     },
     {NULL}  /* Sentinel */
 };
@@ -830,7 +843,6 @@ static void
 Run_dealloc(Run *self)
 {
     if (self->run_handle.id != 0) {
-        mc_sw_run_close(&(self->run_handle));
         Py_DECREF(self->tuple_bufs);
         Py_DECREF(self->fn_obj);
     }

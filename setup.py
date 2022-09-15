@@ -17,9 +17,9 @@ with open("README.md", "r", encoding="utf-8") as fh:
 def build_swift():
     print("Building swift object files")
     os.system("mkdir -p build/swift")
-    os.system("swiftc src/metalcompute.swift -I src -static -emit-library -target arm64-apple-macos11 -o build/swift/metalcomputeswiftarm.a")
-    os.system("swiftc src/metalcompute.swift -I src -static -emit-library -target x86_64-apple-macos11 -o build/swift/metalcomputeswiftx64.a")
-    os.system("lipo -create build/swift/metalcomputeswiftarm.a build/swift/metalcomputeswiftx64.a -o build/swift/metalcomputeswift.a")
+    assert(os.system("swiftc src/metalcompute.swift -I src -static -emit-library -target arm64-apple-macos11 -o build/swift/metalcomputeswiftarm.a")==0)
+    assert(os.system("swiftc src/metalcompute.swift -I src -static -emit-library -target x86_64-apple-macos11 -o build/swift/metalcomputeswiftx64.a")==0)
+    assert(os.system("lipo -create build/swift/metalcomputeswiftarm.a build/swift/metalcomputeswiftx64.a -o build/swift/metalcomputeswift.a")==0)
 
 class build(build_module.build_ext):
     def run(self):

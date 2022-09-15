@@ -76,7 +76,6 @@ var readyToRetrieve = false
 var compileError:String = ""
 
 var single_commandBuffer:MTLCommandBuffer?
-var bUseSingleCommandBuffer = false
 
 @_cdecl("mc_sw_init") public func mc_sw_init(device_index_i64:Int64) -> RetCode {
     let device_index = Int(device_index_i64)
@@ -397,14 +396,19 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     let func_name = String(cString:func_name_raw)
 
     guard let newFunction = sw_kern.lib.makeFunction(name: func_name) else { return FunctionNotFound }
-    let pipelineState = try sw_dev.dev.makeComputePipelineState(function:newFunction)
-        
-    let fn = mc_sw_fn(newFunction)
-    let id = mc_next_index
-    mc_next_index += 1
-    sw_kern.fns[id] = fn
-    sw_kern.pipes[id] = pipelineState
-    fn_handle[0].id = id 
+    do {
+        let pipelineState = try sw_dev.dev.makeComputePipelineState(function:newFunction)  
+            
+        let fn = mc_sw_fn(newFunction)
+        let id = mc_next_index
+        mc_next_index += 1
+        sw_kern.fns[id] = fn
+        sw_kern.pipes[id] = pipelineState
+        fn_handle[0].id = id 
+    }
+    catch {
+            return CannotCreatePipelineState
+    }
 
     return Success; 
 }
@@ -480,17 +484,21 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     return Success
 }
 
-@_cdecl("mc_sw_init_single_encoder")  public func mc_sw_init_single_encoder(dev_handle: UnsafePointer<mc_dev_handle>)->RetCode{
+@_cdecl("mc_sw_init_command_buffer") public func mc_sw_init_command_buffer(dev_handle: UnsafePointer<mc_dev_handle>)->RetCode{
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     single_commandBuffer = sw_dev.queue.makeCommandBuffer()!
-    bUseSingleCommandBuffer = true
     return Success
 }
 
-@_cdecl("mc_sw_commit_single_encoder")  public func mc_sw_commit_single_encoder(dev_handle: UnsafePointer<mc_dev_handle>)->RetCode{
+@_cdecl("mc_sw_commit_command_buffer") public func mc_sw_commit_command_buffer(dev_handle: UnsafePointer<mc_dev_handle>)->RetCode{
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     single_commandBuffer!.commit()
-    bUseSingleCommandBuffer = false
+    return Success
+}
+
+@_cdecl("mc_sw_wait_command_buffer")  public func mc_sw_wait_command_buffer(dev_handle: UnsafePointer<mc_dev_handle>)->RetCode{
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    single_commandBuffer!.waitUntilCompleted()
     return Success
 }
 
@@ -504,114 +512,27 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     guard let sw_fn = sw_kern.fns[fn_handle[0].id] else { return FunctionNotFound }
     guard let pipelineState = sw_kern.pipes[fn_handle[0].id] else { return FunctionNotFound }
     
-    if bUseSingleCommandBuffer == false {
-        guard let commandBuffer = sw_dev.queue.makeCommandBuffer() else { return CannotCreateCommandBuffer }
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return CannotCreateCommandEncoder }
+    guard let commandBuffer = single_commandBuffer else { return CannotCreateCommandBuffer }
+    guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return CannotCreateCommandEncoder }
+   
+    encoder.setComputePipelineState(pipelineState);
 
-        do {
-            // let pipelineState = try sw_dev.dev.makeComputePipelineState(function:sw_fn.fn)
-            encoder.setComputePipelineState(pipelineState);
-
-            for index in 0..<Int(run_handle[0].buf_count) {
-                guard let buf_index = run_handle[0].bufs[index] else { return BufferNotFound }
-                guard let sw_buf = sw_dev.bufs[buf_index[0].id] else { return BufferNotFound }
-                encoder.setBuffer(sw_buf.buf, offset: 0, index: index)
-            }
-
-            let w = pipelineState.threadExecutionWidth
-            let h = pipelineState.maxTotalThreadsPerThreadgroup / w
-            let kcount = run_handle[0].kcount
-            let numThreadgroups = MTLSize(width: (Int(kcount)+(w*h-1))/(w*h), height: 1, depth: 1)
-            let threadsPerThreadgroup = MTLSize(width: w*h, height: 1, depth: 1)
-            encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
-            encoder.endEncoding()
-
-            let run = mc_sw_cb(dev_handle[0].id, commandBuffer)
-            let id = mc_next_index
-            mc_next_index += 1
-            mc_cbs[id] = run
-            run_handle[0].id = id
-
-            // Completion handler - will run later
-            commandBuffer.addCompletedHandler { cb in
-                for (cb_id, sw_cb) in mc_cbs {
-                    if sw_cb.cb === cb {
-                        sw_cb.running = false
-                        // Could call back to python here...
-                        if sw_cb.released {
-                            mc_cbs.removeValue(forKey:cb_id)
-                        }
-                        return
-                    }
-                }
-            }
-
-            commandBuffer.commit()
-
-        } catch {
-            return CannotCreatePipelineState
-        }
-    } else
-    {
-        guard let commandBuffer = single_commandBuffer else { return CannotCreateCommandBuffer }
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return CannotCreateCommandEncoder }
-
-        do {
-            // let pipelineState = try sw_dev.dev.makeComputePipelineState(function:sw_fn.fn)
-           encoder.setComputePipelineState(pipelineState);
-
-            for index in 0..<Int(run_handle[0].buf_count) {
-                guard let buf_index = run_handle[0].bufs[index] else { return BufferNotFound }
-                guard let sw_buf = sw_dev.bufs[buf_index[0].id] else { return BufferNotFound }
-                encoder.setBuffer(sw_buf.buf, offset: 0, index: index)
-            }
-
-            let w = pipelineState.threadExecutionWidth
-            let h = pipelineState.maxTotalThreadsPerThreadgroup / w
-            let kcount = run_handle[0].kcount
-            let numThreadgroups = MTLSize(width: (Int(kcount)+(w*h-1))/(w*h), height: 1, depth: 1)
-            let threadsPerThreadgroup = MTLSize(width: w*h, height: 1, depth: 1)
-            encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
-            encoder.endEncoding()
-
-            // let run = mc_sw_cb(dev_handle[0].id, commandBuffer)
-            // let id = mc_next_index
-            // mc_next_index += 1
-            // mc_cbs[id] = run
-            // run_handle[0].id = id
-
-            // //  // Completion handler - will run later
-            // commandBuffer.addCompletedHandler { cb in
-            //     for (cb_id, sw_cb) in mc_cbs {
-            //         if sw_cb.cb === cb {
-            //             sw_cb.running = false
-            //             // Could call back to python here...
-            //             if sw_cb.released {
-            //                 mc_cbs.removeValue(forKey:cb_id)
-            //             }
-            //             return
-            //         }
-            //     }
-            // }
-
-        } catch {
-            return CannotCreatePipelineState
-        }
-
+    for index in 0..<Int(run_handle[0].buf_count) {
+        guard let buf_index = run_handle[0].bufs[index] else { return BufferNotFound }
+        guard let sw_buf = sw_dev.bufs[buf_index[0].id] else { return BufferNotFound }
+        encoder.setBuffer(sw_buf.buf, offset: 0, index: index)
     }
+
+    let w = pipelineState.threadExecutionWidth
+    let h = pipelineState.maxTotalThreadsPerThreadgroup / w
+    let kcount = run_handle[0].kcount
+    let numThreadgroups = MTLSize(width: (Int(kcount)+(w*h-1))/(w*h), height: 1, depth: 1)
+    let threadsPerThreadgroup = MTLSize(width: w*h, height: 1, depth: 1)
+    encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+    encoder.endEncoding()
+
     return Success
 }
 
-@_cdecl("mc_sw_run_close") public func mc_sw_run_close(
-        run_handle: UnsafePointer<mc_run_handle>) -> RetCode {
-    guard let sw_run = mc_cbs[run_handle[0].id] else {
-        return RunNotFound
-    }
-    // if sw_run.running {
-    //     // Block until completion
-    //     sw_run.cb.waitUntilCompleted()
-    // }
-    return Success
-}
 
 
