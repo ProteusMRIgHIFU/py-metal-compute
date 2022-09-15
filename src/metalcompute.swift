@@ -568,25 +568,25 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
             encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
             encoder.endEncoding()
 
-            let run = mc_sw_cb(dev_handle[0].id, commandBuffer)
-            let id = mc_next_index
-            mc_next_index += 1
-            mc_cbs[id] = run
-            run_handle[0].id = id
+            // let run = mc_sw_cb(dev_handle[0].id, commandBuffer)
+            // let id = mc_next_index
+            // mc_next_index += 1
+            // mc_cbs[id] = run
+            // run_handle[0].id = id
 
-            // Completion handler - will run later
-            commandBuffer.addCompletedHandler { cb in
-                for (cb_id, sw_cb) in mc_cbs {
-                    if sw_cb.cb === cb {
-                        sw_cb.running = false
-                        // Could call back to python here...
-                        if sw_cb.released {
-                            mc_cbs.removeValue(forKey:cb_id)
-                        }
-                        return
-                    }
-                }
-            }
+            // //  // Completion handler - will run later
+            // commandBuffer.addCompletedHandler { cb in
+            //     for (cb_id, sw_cb) in mc_cbs {
+            //         if sw_cb.cb === cb {
+            //             sw_cb.running = false
+            //             // Could call back to python here...
+            //             if sw_cb.released {
+            //                 mc_cbs.removeValue(forKey:cb_id)
+            //             }
+            //             return
+            //         }
+            //     }
+            // }
 
         } catch {
             return CannotCreatePipelineState
@@ -601,10 +601,10 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     guard let sw_run = mc_cbs[run_handle[0].id] else {
         return RunNotFound
     }
-    if sw_run.running {
-        // Block until completion
-        sw_run.cb.waitUntilCompleted()
-    }
+    // if sw_run.running {
+    //     // Block until completion
+    //     sw_run.cb.waitUntilCompleted()
+    // }
     return Success
 }
 
