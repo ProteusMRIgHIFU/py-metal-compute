@@ -258,6 +258,7 @@ class mc_sw_fn {
 class mc_sw_kern {
     let lib:MTLLibrary
     var fns:[Int64:mc_sw_fn] = [:]
+    var pipes:[Int64:MTLComputePipelineState] = [:]
     init(_ lib:MTLLibrary) {
         self.lib = lib
     }
@@ -355,11 +356,12 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
 
     let options = MTLCompileOptions();
     options.fastMathEnabled = true
-    options.languageVersion = .version2_3
+    // options.languageVersion = .version2_3
 
     do {
         let newLibrary = try sw_dev.dev.makeLibrary(source: program, options:options) 
         let kern = mc_sw_kern(newLibrary)
+            
         let id = mc_next_index
         mc_next_index += 1
         sw_dev.kerns[id] = kern
@@ -395,11 +397,13 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     let func_name = String(cString:func_name_raw)
 
     guard let newFunction = sw_kern.lib.makeFunction(name: func_name) else { return FunctionNotFound }
-
+    let pipelineState = try sw_dev.dev.makeComputePipelineState(function:newFunction)
+        
     let fn = mc_sw_fn(newFunction)
     let id = mc_next_index
     mc_next_index += 1
     sw_kern.fns[id] = fn
+    sw_kern.pipes[id] = pipelineState
     fn_handle[0].id = id 
 
     return Success; 
@@ -498,12 +502,14 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     guard let sw_kern = sw_dev.kerns[kern_handle[0].id] else { return KernelNotFound }
     guard let sw_fn = sw_kern.fns[fn_handle[0].id] else { return FunctionNotFound }
+    guard let pipelineState = sw_kern.pipes[fn_handle[0].id] else { return FunctionNotFound }
+    
     if bUseSingleCommandBuffer == false {
         guard let commandBuffer = sw_dev.queue.makeCommandBuffer() else { return CannotCreateCommandBuffer }
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return CannotCreateCommandEncoder }
 
         do {
-            let pipelineState = try sw_dev.dev.makeComputePipelineState(function:sw_fn.fn)
+            // let pipelineState = try sw_dev.dev.makeComputePipelineState(function:sw_fn.fn)
             encoder.setComputePipelineState(pipelineState);
 
             for index in 0..<Int(run_handle[0].buf_count) {
@@ -551,8 +557,8 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
         guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return CannotCreateCommandEncoder }
 
         do {
-            let pipelineState = try sw_dev.dev.makeComputePipelineState(function:sw_fn.fn)
-            encoder.setComputePipelineState(pipelineState);
+            // let pipelineState = try sw_dev.dev.makeComputePipelineState(function:sw_fn.fn)
+           encoder.setComputePipelineState(pipelineState);
 
             for index in 0..<Int(run_handle[0].buf_count) {
                 guard let buf_index = run_handle[0].bufs[index] else { return BufferNotFound }
