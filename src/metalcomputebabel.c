@@ -891,7 +891,7 @@ static PyMethodDef MetalComputeMethods[] = {
 
 static struct PyModuleDef metalcomputemodule = {
     PyModuleDef_HEAD_INIT,
-    "metalcompute",   /* name of module */
+    "metalcomputebabel",   /* name of module */
     "Run metal compute kernels", /* module documentation, may be NULL */
     -1,       /* size of per-interpreter state of the module,
                  or -1 if the module keeps state in global variables. */
@@ -915,7 +915,7 @@ void define_device_info_type() {
 }
 
 PyMODINIT_FUNC
-PyInit_metalcompute(void)
+PyInit_metalcomputebabel(void)
 {
     printf("(creating stdout)\n"); // Uncomment if debugging swift code with print statements
 

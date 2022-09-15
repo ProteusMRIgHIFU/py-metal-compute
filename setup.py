@@ -26,7 +26,7 @@ class build(build_module.build_ext):
         build_swift()
         build_module.build_ext.run(self)
 
-setup(name="metalcompute",
+setup(name="metalcomputebabel",
     version="0.2.3",
     author="Andrew Baldwin",
     author_email="metalcompute@dehabit.info",
@@ -47,15 +47,12 @@ setup(name="metalcompute",
     python_requires=">=3.8",
     cmdclass = {'build_ext': build,},
     ext_modules=[Extension(
-        'metalcompute', 
-        ['src/metalcompute.c'], 
+        'metalcomputebabel', 
+        ['src/metalcomputebabel.c'], 
         extra_compile_args=["-mmacosx-version-min=11.0","-arch arm64","-arch x86_64","-Wno-unused-command-line-argument"],
         extra_link_args=["-mmacosx-version-min=11.0","-arch arm64","-arch x86_64","-Wno-unused-command-line-argument"],
         library_dirs=[".","/usr/lib","/usr/lib/swift"],
         libraries=["swiftFoundation","swiftMetal"],
         extra_objects=["build/swift/metalcomputeswift.a"])],
-    scripts=["examples/metalcompute-mandelbrot", 
-             "examples/metalcompute-measure",
-             "examples/metalcompute-raymarch",
-             "examples/metalcompute-pipe"]
+    scripts=[]
     )
