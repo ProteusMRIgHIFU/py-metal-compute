@@ -75,6 +75,9 @@ var readyToRun = false
 var readyToRetrieve = false
 var compileError:String = ""
 
+var IsExternalGPU = false
+var DefaultBufferMode = MTLResourceOptions.storageModeShared
+
 var single_commandBuffer:MTLCommandBuffer?
 
 @_cdecl("mc_sw_init") public func mc_sw_init(device_index_i64:Int64) -> RetCode {
@@ -113,6 +116,20 @@ var single_commandBuffer:MTLCommandBuffer?
     readyToRun = false
     readyToRetrieve = false
 
+    return Success
+}
+
+@_cdecl("mc_set_external_gpu") public func mc_set_external_gpu(dev_handle: UnsafePointer<mc_dev_handle>, bIsEGPU: Int) -> RetCode {
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    print("mc_set_external_gpu",bIsEGPU)
+    if bIsEGPU==0 {
+        IsExternalGPU = false
+        DefaultBufferMode = MTLResourceOptions.storageModeShared
+    }
+    else {
+        IsExternalGPU = true
+        DefaultBufferMode = MTLResourceOptions.storageModeManaged
+    }
     return Success
 }
 
@@ -165,8 +182,8 @@ func get_stride(_ format: Int) -> Int {
     outputStride = get_stride(oformat);
     guard outputStride != 0 else { return UnsupportedOutputFormat }
 
-    guard let newInputBuffer = lDevice.makeBuffer(bytes: input, length: inputStride * icount, options: .storageModeShared) else { return FailedToMakeInputBuffer }
-    guard let newOutputBuffer = lDevice.makeBuffer(length: outputStride * ocount, options: .storageModeShared) else { return FailedToMakeOutputBuffer }
+    guard let newInputBuffer = lDevice.makeBuffer(bytes: input, length: inputStride * icount, options: DefaultBufferMode) else { return FailedToMakeInputBuffer }
+    guard let newOutputBuffer = lDevice.makeBuffer(length: outputStride * ocount, options: DefaultBufferMode) else { return FailedToMakeOutputBuffer }
 
     inputBuffer = newInputBuffer
     outputBuffer = newOutputBuffer
@@ -218,7 +235,6 @@ func get_stride(_ format: Int) -> Int {
     guard readyToRetrieve else { return NotReadyToRetrieve }
     guard ocount == outputCount else { return IncorrectOutputCount }
     guard let lOutputBuffer = outputBuffer else { return NotReadyToRetrieve }
-
     output.copyMemory(from: lOutputBuffer.contents(), byteCount: outputCount * outputStride)
 
     return Success
@@ -433,12 +449,12 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     var newBuffer:MTLBuffer
     if let src = src_opt {
-        guard let copyBuffer = sw_dev.dev.makeBuffer(bytes: src, length: Int(length), options: .storageModeShared) else {
+        guard let copyBuffer = sw_dev.dev.makeBuffer(bytes: src, length: Int(length), options: DefaultBufferMode) else {
             return CouldNotMakeBuffer
         }
         newBuffer = copyBuffer 
     } else {
-        guard let zeroBuffer = sw_dev.dev.makeBuffer(length: Int(length), options: .storageModeShared) else {
+        guard let zeroBuffer = sw_dev.dev.makeBuffer(length: Int(length), options: DefaultBufferMode) else {
             return CouldNotMakeBuffer
         }
         newBuffer = zeroBuffer 
@@ -452,6 +468,26 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     buf_handle[0].buf = newBuffer.contents().bindMemory(to: CChar.self, capacity: Int(length))
     buf_handle[0].length = length
 
+    return Success; 
+}
+
+@_cdecl("mc_sw_buf_sync") public func mc_sw_buf_sync(
+        dev_handle: UnsafePointer<mc_dev_handle>, 
+        NBufs: Int,
+        buf_handles: UnsafePointer<UnsafePointer<mc_buf_handle>>) -> RetCode {
+
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    let commandBufferSync = sw_dev.queue.makeCommandBuffer()!
+    let blitCommandEncoderSync: MTLBlitCommandEncoder = commandBufferSync.makeBlitCommandEncoder()!
+        
+    for index in 0..<NBufs {
+        guard let buf = sw_dev.bufs[buf_handles[index][0].id] else { return BufferNotFound }    
+        blitCommandEncoderSync.synchronize(resource: buf.buf) 
+    } 
+
+    blitCommandEncoderSync.endEncoding()
+    commandBufferSync.commit()
+    commandBufferSync.waitUntilCompleted()
     return Success; 
 }
 

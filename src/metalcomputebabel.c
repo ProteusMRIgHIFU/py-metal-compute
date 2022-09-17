@@ -406,6 +406,76 @@ Device_wait_command_buffer(Device* self, PyObject* args, PyObject* kwargs)
 
 }
 
+int to_buffer(PyObject* possible_buffer, Device* dev, Buffer** buffer);
+
+static PyObject *
+Device_sync_buffers(Device *self, PyObject *args, PyObject *kwds)
+{
+    PyObject* arg_tuple;
+
+
+    if (!PyArg_ParseTuple(args, "O", &arg_tuple)) {
+        return NULL;
+    }
+    
+    int64_t buffer_count = (int64_t)PyTuple_Size(arg_tuple) ;
+
+    // Allocate space to hold pointers to buffers
+    mc_buf_handle** bufs = (mc_buf_handle**)malloc(buffer_count * sizeof(mc_buf_handle*));  
+
+    for (int i = 0; i < buffer_count; i++) {
+        PyObject* pos_buf = PyTuple_GetItem(arg_tuple, i);
+
+        Buffer* buf;
+        if (to_buffer(pos_buf, self, &buf)) {
+            printf("to_buffer failed\n");
+            free(bufs);
+            return NULL;
+        }
+
+        // TODO: Should check here that the buffer is from the same Metal device
+        bufs[i] = &(buf->buf_handle);
+
+    }
+
+    if (mc_err(mc_sw_buf_sync(&(self->dev_handle), buffer_count,  bufs))) {
+        free(bufs);
+        return NULL;
+    }
+
+    free(bufs);
+
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+Device_set_external_gpu(Device* self, PyObject* args, PyObject* kwargs)
+{
+    PyObject* bIseGPU ;
+    if (!PyArg_ParseTuple(args, "O", &bIseGPU))
+        return NULL;
+
+    int64_t l_bIseGPU;
+
+    PyObject* as_long_bIseGPU = PyNumber_Long(bIseGPU);
+    PyErr_Clear();
+    if (as_long_bIseGPU != NULL) {
+        // Yes
+        l_bIseGPU = PyLong_AsLongLong(as_long_bIseGPU);
+    } else 
+    {
+        // Nothing we can use
+        mc_err(UnsupportedInputFormat);
+        return NULL;
+    }
+
+    if (mc_err(mc_set_external_gpu(&(self->dev_handle),l_bIseGPU))) {
+        return  NULL;
+    }
+     Py_RETURN_NONE;
+
+}
+
 static PyObject *
 Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
 {
@@ -478,6 +548,13 @@ static PyMethodDef Device_methods[] = {
     {"wait_command_buffer", (PyCFunction) Device_wait_command_buffer, METH_VARARGS,
      "wait command buffer"
     },
+    {"set_external_gpu", (PyCFunction) Device_set_external_gpu, METH_VARARGS,
+     "set if GPU is external or AMD"
+    },
+    {"sync_buffers", (PyCFunction) Device_sync_buffers, METH_VARARGS,
+     "sync buffers"
+    },
+    
     {NULL}  /* Sentinel */
 };
 
@@ -835,7 +912,7 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
     Py_INCREF(fn_obj);
     // Keep this so that we have reference to all argument objects
     self->tuple_bufs = tuple_bufs;
-
+    free(self->run_handle.bufs);
     return 0;
 }
 
