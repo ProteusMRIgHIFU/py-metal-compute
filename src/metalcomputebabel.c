@@ -427,8 +427,9 @@ Device_sync_buffers(Device *self, PyObject *args, PyObject *kwds)
         PyObject* pos_buf = PyTuple_GetItem(arg_tuple, i);
 
         Buffer* buf;
-        if (to_buffer(pos_buf, self, &buf)) {
-            printf("to_buffer failed\n");
+        int tstat =to_buffer(pos_buf, self, &buf);
+        if (tstat==-1) {
+            // PySys_WriteStdout("to_buffer failed\n");
             free(bufs);
             return NULL;
         }
@@ -775,6 +776,7 @@ Buffer_init(Buffer *self, PyObject *args, PyObject *kwds)
 static void
 Buffer_dealloc(Buffer *self)
 {   
+    // PySys_WriteStdout("deallocating buffer\n");
     if (self->buf_handle.id != 0) {
         mc_sw_buf_close(&(self->dev_obj->dev_handle), &(self->buf_handle));
         Py_DECREF(self->dev_obj);
@@ -802,11 +804,13 @@ int Buffer_getbuffer(Buffer *self, Py_buffer *view, int flags) {
     view->strides = NULL;
     view->suboffsets = NULL;
     self->exports++;
+    //PySys_WriteStdout("get  buffer\n");
 
     return 0;
 }
 
 int Buffer_releasebuffer(Buffer *self, Py_buffer *view, int flags) {
+    // PySys_WriteStdout("releasing buffer\n");
     self->exports--;
     return 0;
 }
@@ -850,7 +854,7 @@ int to_buffer(PyObject* possible_buffer, Device* dev, Buffer** buffer) {
 
     if (newBufferObj != NULL) {
         *buffer = newBufferObj;
-        return 0;
+        return 1;
     }
 
     return -1; // Failed
@@ -889,7 +893,8 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
         PyObject* pos_buf = PyTuple_GetItem(arg_tuple, i+1);
 
         Buffer* buf;
-        if (to_buffer(pos_buf, fn_obj->kern_obj->dev_obj, &buf)) {
+        int tstat = to_buffer(pos_buf, fn_obj->kern_obj->dev_obj, &buf);
+        if (tstat==-1) {
             free(self->run_handle.bufs);
             Py_DECREF(tuple_bufs);
             return -1;
@@ -898,6 +903,8 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
         // TODO: Should check here that the buffer is from the same Metal device
         self->run_handle.bufs[i] = &(buf->buf_handle);
         PyTuple_SetItem(tuple_bufs, i, (PyObject*)buf);
+        if (tstat==0)
+            Py_DECREF(pos_buf);
     }
 
     if (mc_err(mc_sw_run_open(
@@ -918,7 +925,7 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
 
 static void
 Run_dealloc(Run *self)
-{
+{   
     if (self->run_handle.id != 0) {
         Py_DECREF(self->tuple_bufs);
         Py_DECREF(self->fn_obj);
@@ -994,7 +1001,7 @@ void define_device_info_type() {
 PyMODINIT_FUNC
 PyInit_metalcomputebabel(void)
 {
-    printf("(creating stdout)\n"); // Uncomment if debugging swift code with print statements
+    // PySys_WriteStdout("(creating stdout)\n"); // Uncomment if debugging swift code with print statements
 
     if (PyType_Ready(&DeviceType) < 0)
         return NULL;

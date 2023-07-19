@@ -7,7 +7,6 @@ Swift backend for Python extension to use Metal for compute
 */
 
 import MetalKit
-
 import mc_c2sw // Bridging C to Swift
 
 let Success:RetCode = 0
