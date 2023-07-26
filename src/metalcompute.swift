@@ -567,6 +567,12 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
     encoder.endEncoding()
 
+    let run = mc_sw_cb(dev_handle[0].id, commandBuffer)
+    let id = mc_next_index
+    mc_next_index += 1
+    mc_cbs[id] = run
+    run_handle[0].id = id
+
     return Success
 }
 
