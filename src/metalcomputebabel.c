@@ -433,6 +433,7 @@ Device_sync_buffers(Device *self, PyObject *args, PyObject *kwds)
             free(bufs);
             return NULL;
         }
+        Py_DECREF(buf);
 
         // TODO: Should check here that the buffer is from the same Metal device
         bufs[i] = &(buf->buf_handle);
@@ -778,6 +779,7 @@ Buffer_dealloc(Buffer *self)
 {   
     // PySys_WriteStdout("deallocating buffer\n");
     if (self->buf_handle.id != 0) {
+        //  PySys_WriteStdout("releasing\n");
         mc_sw_buf_close(&(self->dev_obj->dev_handle), &(self->buf_handle));
         Py_DECREF(self->dev_obj);
     }
@@ -915,11 +917,13 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
         return -1;
     }
 
+    free(self->run_handle.bufs);
+    
     self->fn_obj = fn_obj;
     Py_INCREF(fn_obj);
     // Keep this so that we have reference to all argument objects
     self->tuple_bufs = tuple_bufs;
-    free(self->run_handle.bufs);
+    
     return 0;
 }
 
