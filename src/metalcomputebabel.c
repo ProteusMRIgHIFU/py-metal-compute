@@ -40,6 +40,7 @@ const RetCode CouldNotMakeBuffer = -1003;
 const RetCode BufferNotFound = -1004;
 const RetCode RunNotFound = -1005;
 const RetCode DeviceBuffersAllocated = -1006;
+const RetCode SourceMemoryInvalid = -1007;
 
 // Python level errors
 const RetCode FirstArgumentNotDevice = -2000;
@@ -90,7 +91,8 @@ RetCode mc_err(RetCode ret) {
             case KernelNotFound: errString = "Kernel not found"; break;
             case FunctionNotFound: errString = "Function not found"; break;
             case CouldNotMakeBuffer: errString = "Could not make buffer"; break;
-            case BufferNotFound: errString = "Buffer not found"; break;
+            case BufferNotFound: errString = "Buffer not found !!"; break;
+            case SourceMemoryInvalid: errString = "Invalid source memory to update GPU buffer"; break;
             case RunNotFound: errString = "Run not found"; break;
             case DeviceBuffersAllocated: errString = "Device closed while buffers still allocated"; break;
             // Python level errors
@@ -309,7 +311,6 @@ typedef struct {
 typedef struct {
     PyObject_HEAD
     Function* fn_obj;
-    PyObject* tuple_bufs; // Tuple of buffers used by this run
     mc_run_handle run_handle;
 } Run;
 
@@ -779,7 +780,7 @@ Buffer_dealloc(Buffer *self)
 {   
     // PySys_WriteStdout("deallocating buffer\n");
     if (self->buf_handle.id != 0) {
-        //  PySys_WriteStdout("releasing\n");
+        // PySys_WriteStdout("releasing\n");
         mc_sw_buf_close(&(self->dev_obj->dev_handle), &(self->buf_handle));
         Py_DECREF(self->dev_obj);
     }
@@ -890,23 +891,13 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
 
     // Allocate space to hold pointers to buffers
     self->run_handle.bufs = (mc_buf_handle**)malloc(buffer_count * sizeof(mc_buf_handle*));  
-    PyObject* tuple_bufs = PyTuple_New(buffer_count);
     for (int i = 0; i < buffer_count; i++) {
         PyObject* pos_buf = PyTuple_GetItem(arg_tuple, i+1);
 
-        Buffer* buf;
-        int tstat = to_buffer(pos_buf, fn_obj->kern_obj->dev_obj, &buf);
-        if (tstat==-1) {
-            free(self->run_handle.bufs);
-            Py_DECREF(tuple_bufs);
-            return -1;
-        }
-
+        Buffer* buf = (Buffer*) pos_buf;
         // TODO: Should check here that the buffer is from the same Metal device
         self->run_handle.bufs[i] = &(buf->buf_handle);
-        PyTuple_SetItem(tuple_bufs, i, (PyObject*)buf);
-        if (tstat==0)
-            Py_DECREF(pos_buf);
+
     }
 
     if (mc_err(mc_sw_run_open(
@@ -917,12 +908,9 @@ Run_init(Run *self, PyObject *args, PyObject *kwds)
         return -1;
     }
 
-    free(self->run_handle.bufs);
-    
     self->fn_obj = fn_obj;
     Py_INCREF(fn_obj);
     // Keep this so that we have reference to all argument objects
-    self->tuple_bufs = tuple_bufs;
     
     return 0;
 }
@@ -931,8 +919,9 @@ static void
 Run_dealloc(Run *self)
 {   
     if (self->run_handle.id != 0) {
-        Py_DECREF(self->tuple_bufs);
+        mc_sw_run_close(&(self->run_handle));
         Py_DECREF(self->fn_obj);
+        free(self->run_handle.bufs);
     }
     Py_TYPE(self)->tp_free((PyObject *) self);
 }

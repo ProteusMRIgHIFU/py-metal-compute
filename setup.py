@@ -27,7 +27,7 @@ class build(build_module.build_ext):
         build_module.build_ext.run(self)
 
 setup(name="metalcomputebabel",
-    version="0.2.3",
+    version="0.2.3-1",
     author="Andrew Baldwin",
     author_email="metalcompute@dehabit.info",
     description="A python library to run metal compute kernels on macOS",
@@ -49,8 +49,8 @@ setup(name="metalcomputebabel",
     ext_modules=[Extension(
         'metalcomputebabel', 
         ['src/metalcomputebabel.c'], 
-        extra_compile_args=["-mmacosx-version-min=11.0","-arch arm64","-arch x86_64","-Wno-unused-command-line-argument"],
-        extra_link_args=["-mmacosx-version-min=11.0","-arch arm64","-arch x86_64","-Wno-unused-command-line-argument"],
+        extra_compile_args=["-mmacosx-version-min=11.0","-arch","arm64","-arch", "x86_64","-Wno-unused-command-line-argument"],
+        extra_link_args=["-mmacosx-version-min=11.0","-arch", "arm64","-arch", "x86_64","-Wno-unused-command-line-argument"],
         library_dirs=[".","/usr/lib","/usr/lib/swift"],
         libraries=["swiftFoundation","swiftMetal"],
         extra_objects=["build/swift/metalcomputeswift.a"])],

@@ -75,3 +75,4 @@ RetCode mc_sw_run_open(const mc_dev_handle* dev_handle, const mc_kern_handle* ke
 RetCode mc_sw_commit_command_buffer(const mc_dev_handle* dev_handle);
 RetCode mc_sw_init_command_buffer(const mc_dev_handle* dev_handle);
 RetCode mc_sw_wait_command_buffer(const mc_dev_handle* dev_handle);
+RetCode mc_sw_run_close(const mc_run_handle* run_handle);
