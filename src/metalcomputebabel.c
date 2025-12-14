@@ -744,21 +744,24 @@ Buffer_init(Buffer *self, PyObject *args, PyObject *kwds)
     }
 
     // Is the argument an integer length?
-    PyObject* as_long = PyNumber_Long(length_or_buffer);
-    PyErr_Clear();
-    if (as_long != NULL) {
-        // Yes
-        length = PyLong_AsLongLong(as_long);
-        src = NULL;
-    } else if (!PyObject_GetBuffer(length_or_buffer, &buffer, PyBUF_ND)) {
+
+    if (!PyObject_GetBuffer(length_or_buffer, &buffer, PyBUF_ND)) {
         length = buffer.len;
         src = buffer.buf;
-    } else {
-        // Nothing we can use
-        mc_err(UnsupportedInputFormat);
-        return -1;
     }
-
+    else {
+        PyObject* as_long = PyNumber_Long(length_or_buffer);
+        PyErr_Clear();
+        if (as_long != NULL) {
+            // Yes
+            length = PyLong_AsLongLong(as_long);
+            src = NULL;         
+        } else {
+            // Nothing we can use
+            mc_err(UnsupportedInputFormat);
+            return -1;
+        }
+    }
     if (mc_err(mc_sw_buf_open(&(dev_obj->dev_handle), length, src, &(self->buf_handle)))) {
         return -1;
     }
