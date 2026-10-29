@@ -36,6 +36,9 @@ let BufferNotFound:RetCode = -1004
 let RunNotFound:RetCode = -1005
 let DeviceBuffersAllocated:RetCode = -1006
 let SourceMemoryInvalid:RetCode = -1007
+let BatchNotOpen:RetCode = -1008
+let BatchAlreadyOpen:RetCode = -1009
+let CommandBufferFailed:RetCode = -1010
 
 // Buffer formats
 let FormatUnknown = -1
@@ -598,4 +601,82 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     return Success
 }
 
+// Batch API
+// Many dispatches are encoded in a single command buffer with one serial compute encoder
+// (each dispatch completes before the next one starts). Buffers are bound once per batch, and only
+// the offset of buffer 0 can change per dispatch (e.g. to select per-step constants).
+// Committed batches are tracked so the CPU can encode the next batch while the GPU runs the current one.
 
+var batch_commandBuffer:MTLCommandBuffer?
+var batch_encoder:MTLComputeCommandEncoder?
+var batch_inflight:[MTLCommandBuffer] = []
+
+@_cdecl("mc_sw_batch_begin") public func mc_sw_batch_begin(
+        dev_handle: UnsafePointer<mc_dev_handle>,
+        NBufs: Int,
+        buf_handles: UnsafePointer<UnsafePointer<mc_buf_handle>>) -> RetCode {
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    guard batch_encoder == nil else { return BatchAlreadyOpen }
+    guard let commandBuffer = sw_dev.queue.makeCommandBuffer() else { return CannotCreateCommandBuffer }
+    guard let encoder = commandBuffer.makeComputeCommandEncoder(dispatchType: .serial) else { return CannotCreateCommandEncoder }
+    for index in 0..<NBufs {
+        guard let sw_buf = sw_dev.bufs[buf_handles[index][0].id] else {
+            encoder.endEncoding()
+            return BufferNotFound
+        }
+        encoder.setBuffer(sw_buf.buf, offset: 0, index: index)
+    }
+    batch_commandBuffer = commandBuffer
+    batch_encoder = encoder
+    return Success
+}
+
+@_cdecl("mc_sw_batch_dispatch") public func mc_sw_batch_dispatch(
+        dev_handle: UnsafePointer<mc_dev_handle>,
+        kern_handle: UnsafePointer<mc_kern_handle>,
+        fn_handle: UnsafePointer<mc_fn_handle>,
+        kcount: Int64,
+        buf0_offset: Int64) -> RetCode {
+    guard let encoder = batch_encoder else { return BatchNotOpen }
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    guard let sw_kern = sw_dev.kerns[kern_handle[0].id] else { return KernelNotFound }
+    guard let pipelineState = sw_kern.pipes[fn_handle[0].id] else { return FunctionNotFound }
+
+    encoder.setComputePipelineState(pipelineState)
+    encoder.setBufferOffset(Int(buf0_offset), index: 0)
+    let w = pipelineState.threadExecutionWidth
+    let h = pipelineState.maxTotalThreadsPerThreadgroup / w
+    let numThreadgroups = MTLSize(width: (Int(kcount)+(w*h-1))/(w*h), height: 1, depth: 1)
+    let threadsPerThreadgroup = MTLSize(width: w*h, height: 1, depth: 1)
+    encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+    return Success
+}
+
+@_cdecl("mc_sw_batch_commit") public func mc_sw_batch_commit(
+        dev_handle: UnsafePointer<mc_dev_handle>) -> RetCode {
+    guard let encoder = batch_encoder, let commandBuffer = batch_commandBuffer else { return BatchNotOpen }
+    encoder.endEncoding()
+    commandBuffer.commit()
+    batch_inflight.append(commandBuffer)
+    batch_encoder = nil
+    batch_commandBuffer = nil
+    return Success
+}
+
+// Blocks until at most max_inflight committed batches remain running (0 waits for all of them)
+@_cdecl("mc_sw_batch_wait") public func mc_sw_batch_wait(
+        dev_handle: UnsafePointer<mc_dev_handle>,
+        max_inflight: Int64) -> RetCode {
+    var ret = Success
+    while batch_inflight.count > Int(max_inflight) {
+        let commandBuffer = batch_inflight.removeFirst()
+        commandBuffer.waitUntilCompleted()
+        if commandBuffer.status == .error {
+            if let error = commandBuffer.error {
+                compileError = "GPU command buffer failed: " + error.localizedDescription
+            }
+            ret = CommandBufferFailed
+        }
+    }
+    return ret
+}

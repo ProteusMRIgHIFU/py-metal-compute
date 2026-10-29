@@ -41,6 +41,9 @@ const RetCode BufferNotFound = -1004;
 const RetCode RunNotFound = -1005;
 const RetCode DeviceBuffersAllocated = -1006;
 const RetCode SourceMemoryInvalid = -1007;
+const RetCode BatchNotOpen = -1008;
+const RetCode BatchAlreadyOpen = -1009;
+const RetCode CommandBufferFailed = -1010;
 
 // Python level errors
 const RetCode FirstArgumentNotDevice = -2000;
@@ -95,6 +98,8 @@ RetCode mc_err(RetCode ret) {
             case SourceMemoryInvalid: errString = "Invalid source memory to update GPU buffer"; break;
             case RunNotFound: errString = "Run not found"; break;
             case DeviceBuffersAllocated: errString = "Device closed while buffers still allocated"; break;
+            case BatchNotOpen: errString = "No batch open, call batch_begin first"; break;
+            case BatchAlreadyOpen: errString = "A batch is already open, call batch_commit first"; break;
             // Python level errors
             case FirstArgumentNotDevice: errString = "First argument should be a metalcompute.Device object"; break;
             case FirstArgumentNotKernel: errString = "First argument should be a metalcompute.Kernel object"; break;
@@ -102,7 +107,7 @@ RetCode mc_err(RetCode ret) {
             // C level errors below
         }
 
-        if (ret == FailedToCompile) {
+        if (ret == FailedToCompile || ret == CommandBufferFailed) {
             char* compileErrString = mc_sw_get_compile_error(); 
             PyErr_SetString(MetalComputeError, compileErrString);
             free(compileErrString);
@@ -479,6 +484,83 @@ Device_set_external_gpu(Device* self, PyObject* args, PyObject* kwargs)
 
 }
 
+static PyTypeObject FunctionType; // Forward reference
+
+static PyObject *
+Device_batch_begin(Device *self, PyObject *args, PyObject *kwds)
+{
+    PyObject* arg_tuple;
+
+    if (!PyArg_ParseTuple(args, "O!", &PyTuple_Type, &arg_tuple)) {
+        return NULL;
+    }
+
+    int64_t buffer_count = (int64_t)PyTuple_Size(arg_tuple);
+    const mc_buf_handle** bufs = (const mc_buf_handle**)malloc(buffer_count * sizeof(mc_buf_handle*));
+
+    for (int i = 0; i < buffer_count; i++) {
+        PyObject* pos_buf = PyTuple_GetItem(arg_tuple, i);
+        if (!PyObject_TypeCheck(pos_buf, &BufferType)) {
+            free(bufs);
+            PyErr_SetString(PyExc_TypeError, "batch_begin expects a tuple of metalcompute.Buffer objects");
+            return NULL;
+        }
+        bufs[i] = &(((Buffer*)pos_buf)->buf_handle);
+    }
+
+    RetCode ret = mc_sw_batch_begin(&(self->dev_handle), buffer_count, bufs);
+    free(bufs);
+    if (mc_err(ret)) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+Device_batch_dispatch(Device *self, PyObject *args, PyObject *kwds)
+{
+    PyObject* fn_obj;
+    long long kcount;
+    long long buf0_offset = 0;
+
+    if (!PyArg_ParseTuple(args, "O!L|L", &FunctionType, &fn_obj, &kcount, &buf0_offset)) {
+        return NULL;
+    }
+    Function* fn = (Function*)fn_obj;
+    if (mc_err(mc_sw_batch_dispatch(&(self->dev_handle), &(fn->kern_obj->kern_handle), &(fn->fn_handle),
+                                    kcount, buf0_offset))) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+Device_batch_commit(Device *self, PyObject *args, PyObject *kwds)
+{
+    if (mc_err(mc_sw_batch_commit(&(self->dev_handle)))) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+Device_batch_wait(Device *self, PyObject *args, PyObject *kwds)
+{
+    long long max_inflight = 0;
+    RetCode ret;
+
+    if (!PyArg_ParseTuple(args, "|L", &max_inflight)) {
+        return NULL;
+    }
+    Py_BEGIN_ALLOW_THREADS
+    ret = mc_sw_batch_wait(&(self->dev_handle), max_inflight);
+    Py_END_ALLOW_THREADS
+    if (mc_err(ret)) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
 static PyObject *
 Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
 {
@@ -556,6 +638,18 @@ static PyMethodDef Device_methods[] = {
     },
     {"sync_buffers", (PyCFunction) Device_sync_buffers, METH_VARARGS,
      "sync buffers"
+    },
+    {"batch_begin", (PyCFunction) Device_batch_begin, METH_VARARGS,
+     "batch_begin(buffers): open a command buffer with one serial encoder and bind the tuple of buffers (indexes 0..n-1)"
+    },
+    {"batch_dispatch", (PyCFunction) Device_batch_dispatch, METH_VARARGS,
+     "batch_dispatch(function, count, buf0_offset=0): encode a dispatch of count threads in the open batch, binding buffer 0 at buf0_offset bytes"
+    },
+    {"batch_commit", (PyCFunction) Device_batch_commit, METH_VARARGS,
+     "batch_commit(): close and submit the open batch, without waiting"
+    },
+    {"batch_wait", (PyCFunction) Device_batch_wait, METH_VARARGS,
+     "batch_wait(max_inflight=0): block until at most max_inflight submitted batches are still running; raises if a batch failed"
     },
     
     {NULL}  /* Sentinel */
