@@ -602,8 +602,9 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
 }
 
 // Batch API
-// Many dispatches are encoded in a single command buffer with one serial compute encoder
-// (each dispatch completes before the next one starts). Buffers are bound once per batch, and only
+// Many dispatches are encoded in a single command buffer with one compute encoder. With a serial encoder
+// each dispatch completes before the next one starts; with a concurrent encoder dispatches may overlap
+// and mc_sw_batch_barrier must be used between dependent dispatches. Buffers are bound once per batch, and only
 // the offset of buffer 0 can change per dispatch (e.g. to select per-step constants).
 // Committed batches are tracked so the CPU can encode the next batch while the GPU runs the current one.
 
@@ -614,11 +615,13 @@ var batch_inflight:[MTLCommandBuffer] = []
 @_cdecl("mc_sw_batch_begin") public func mc_sw_batch_begin(
         dev_handle: UnsafePointer<mc_dev_handle>,
         NBufs: Int,
-        buf_handles: UnsafePointer<UnsafePointer<mc_buf_handle>>) -> RetCode {
+        buf_handles: UnsafePointer<UnsafePointer<mc_buf_handle>>,
+        concurrent: Int64) -> RetCode {
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     guard batch_encoder == nil else { return BatchAlreadyOpen }
     guard let commandBuffer = sw_dev.queue.makeCommandBuffer() else { return CannotCreateCommandBuffer }
-    guard let encoder = commandBuffer.makeComputeCommandEncoder(dispatchType: .serial) else { return CannotCreateCommandEncoder }
+    let dispatchType: MTLDispatchType = concurrent != 0 ? .concurrent : .serial
+    guard let encoder = commandBuffer.makeComputeCommandEncoder(dispatchType: dispatchType) else { return CannotCreateCommandEncoder }
     for index in 0..<NBufs {
         guard let sw_buf = sw_dev.bufs[buf_handles[index][0].id] else {
             encoder.endEncoding()
@@ -636,7 +639,8 @@ var batch_inflight:[MTLCommandBuffer] = []
         kern_handle: UnsafePointer<mc_kern_handle>,
         fn_handle: UnsafePointer<mc_fn_handle>,
         kcount: Int64,
-        buf0_offset: Int64) -> RetCode {
+        buf0_offset: Int64,
+        threads_per_group: Int64) -> RetCode {
     guard let encoder = batch_encoder else { return BatchNotOpen }
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     guard let sw_kern = sw_dev.kerns[kern_handle[0].id] else { return KernelNotFound }
@@ -644,11 +648,25 @@ var batch_inflight:[MTLCommandBuffer] = []
 
     encoder.setComputePipelineState(pipelineState)
     encoder.setBufferOffset(Int(buf0_offset), index: 0)
+    // Default threadgroup size is the largest multiple of the SIMD width supported by the pipeline;
+    // a requested size is rounded down to a multiple of the SIMD width and capped by that maximum
     let w = pipelineState.threadExecutionWidth
-    let h = pipelineState.maxTotalThreadsPerThreadgroup / w
-    let numThreadgroups = MTLSize(width: (Int(kcount)+(w*h-1))/(w*h), height: 1, depth: 1)
-    let threadsPerThreadgroup = MTLSize(width: w*h, height: 1, depth: 1)
+    let maxGroup = (pipelineState.maxTotalThreadsPerThreadgroup / w) * w
+    var group = maxGroup
+    if threads_per_group > 0 {
+        group = min(maxGroup, max(w, (Int(threads_per_group) / w) * w))
+    }
+    let numThreadgroups = MTLSize(width: (Int(kcount)+(group-1))/group, height: 1, depth: 1)
+    let threadsPerThreadgroup = MTLSize(width: group, height: 1, depth: 1)
     encoder.dispatchThreadgroups(numThreadgroups, threadsPerThreadgroup: threadsPerThreadgroup)
+    return Success
+}
+
+// Makes the results of all previous dispatches in the batch visible to the following ones
+@_cdecl("mc_sw_batch_barrier") public func mc_sw_batch_barrier(
+        dev_handle: UnsafePointer<mc_dev_handle>) -> RetCode {
+    guard let encoder = batch_encoder else { return BatchNotOpen }
+    encoder.memoryBarrier(scope: .buffers)
     return Success
 }
 

@@ -490,8 +490,9 @@ static PyObject *
 Device_batch_begin(Device *self, PyObject *args, PyObject *kwds)
 {
     PyObject* arg_tuple;
+    int concurrent = 0;
 
-    if (!PyArg_ParseTuple(args, "O!", &PyTuple_Type, &arg_tuple)) {
+    if (!PyArg_ParseTuple(args, "O!|p", &PyTuple_Type, &arg_tuple, &concurrent)) {
         return NULL;
     }
 
@@ -508,7 +509,7 @@ Device_batch_begin(Device *self, PyObject *args, PyObject *kwds)
         bufs[i] = &(((Buffer*)pos_buf)->buf_handle);
     }
 
-    RetCode ret = mc_sw_batch_begin(&(self->dev_handle), buffer_count, bufs);
+    RetCode ret = mc_sw_batch_begin(&(self->dev_handle), buffer_count, bufs, concurrent);
     free(bufs);
     if (mc_err(ret)) {
         return NULL;
@@ -522,13 +523,23 @@ Device_batch_dispatch(Device *self, PyObject *args, PyObject *kwds)
     PyObject* fn_obj;
     long long kcount;
     long long buf0_offset = 0;
+    long long threads_per_group = 0;
 
-    if (!PyArg_ParseTuple(args, "O!L|L", &FunctionType, &fn_obj, &kcount, &buf0_offset)) {
+    if (!PyArg_ParseTuple(args, "O!L|LL", &FunctionType, &fn_obj, &kcount, &buf0_offset, &threads_per_group)) {
         return NULL;
     }
     Function* fn = (Function*)fn_obj;
     if (mc_err(mc_sw_batch_dispatch(&(self->dev_handle), &(fn->kern_obj->kern_handle), &(fn->fn_handle),
-                                    kcount, buf0_offset))) {
+                                    kcount, buf0_offset, threads_per_group))) {
+        return NULL;
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *
+Device_batch_barrier(Device *self, PyObject *args, PyObject *kwds)
+{
+    if (mc_err(mc_sw_batch_barrier(&(self->dev_handle)))) {
         return NULL;
     }
     Py_RETURN_NONE;
@@ -640,10 +651,13 @@ static PyMethodDef Device_methods[] = {
      "sync buffers"
     },
     {"batch_begin", (PyCFunction) Device_batch_begin, METH_VARARGS,
-     "batch_begin(buffers): open a command buffer with one serial encoder and bind the tuple of buffers (indexes 0..n-1)"
+     "batch_begin(buffers, concurrent=False): open a command buffer with one encoder and bind the tuple of buffers (indexes 0..n-1). With concurrent=True dispatches may overlap; use batch_barrier between dependent dispatches"
     },
     {"batch_dispatch", (PyCFunction) Device_batch_dispatch, METH_VARARGS,
-     "batch_dispatch(function, count, buf0_offset=0): encode a dispatch of count threads in the open batch, binding buffer 0 at buf0_offset bytes"
+     "batch_dispatch(function, count, buf0_offset=0, threads_per_group=0): encode a dispatch of count threads in the open batch, binding buffer 0 at buf0_offset bytes. threads_per_group=0 uses the largest size supported by the function"
+    },
+    {"batch_barrier", (PyCFunction) Device_batch_barrier, METH_VARARGS,
+     "batch_barrier(): make the results of previous dispatches in the batch visible to the following ones (needed with concurrent batches)"
     },
     {"batch_commit", (PyCFunction) Device_batch_commit, METH_VARARGS,
      "batch_commit(): close and submit the open batch, without waiting"

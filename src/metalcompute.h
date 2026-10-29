@@ -78,8 +78,9 @@ RetCode mc_sw_wait_command_buffer(const mc_dev_handle* dev_handle);
 RetCode mc_sw_run_close(const mc_run_handle* run_handle);
 
 // Batch API: many dispatches in one command buffer, buffers bound once per batch
-RetCode mc_sw_batch_begin(const mc_dev_handle* dev_handle, int64_t nBufs, const mc_buf_handle** buf_handle);
+RetCode mc_sw_batch_begin(const mc_dev_handle* dev_handle, int64_t nBufs, const mc_buf_handle** buf_handle, int64_t concurrent);
 RetCode mc_sw_batch_dispatch(const mc_dev_handle* dev_handle, const mc_kern_handle* kern_handle,
-                     const mc_fn_handle* fn_handle, int64_t kcount, int64_t buf0_offset);
+                     const mc_fn_handle* fn_handle, int64_t kcount, int64_t buf0_offset, int64_t threads_per_group);
+RetCode mc_sw_batch_barrier(const mc_dev_handle* dev_handle);
 RetCode mc_sw_batch_commit(const mc_dev_handle* dev_handle);
 RetCode mc_sw_batch_wait(const mc_dev_handle* dev_handle, int64_t max_inflight);
