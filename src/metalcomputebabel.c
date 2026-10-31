@@ -46,6 +46,7 @@ const RetCode BatchAlreadyOpen = -1009;
 const RetCode CommandBufferFailed = -1010;
 const RetCode CannotCreateArgumentEncoder = -1011;
 const RetCode InvalidArgumentAccess = -1012;
+const RetCode CannotMakeNoCopyBuffer = -1013;
 
 // Python level errors
 const RetCode FirstArgumentNotDevice = -2000;
@@ -104,6 +105,7 @@ RetCode mc_err(RetCode ret) {
             case BatchAlreadyOpen: errString = "A batch is already open, call batch_commit first"; break;
             case CannotCreateArgumentEncoder: errString = "Cannot create argument encoder"; break;
             case InvalidArgumentAccess: errString = "Invalid access for argument buffer entry"; break;
+            case CannotMakeNoCopyBuffer: errString = "Cannot wrap host memory without a copy (needs unified memory and page-aligned contiguous data)"; break;
             // Python level errors
             case FirstArgumentNotDevice: errString = "First argument should be a metalcompute.Device object"; break;
             case FirstArgumentNotKernel: errString = "First argument should be a metalcompute.Kernel object"; break;
@@ -315,6 +317,10 @@ typedef struct {
     mc_buf_handle buf_handle;
     uint64_t length;
     uint64_t exports;
+    Py_buffer host;     // host memory wrapped without copy (zero_copy), held until the buffer is closed
+    int zero_copy;
+    int readonly;       // set when the wrapped host memory is read-only
+    PyObject* refs;     // objects kept alive with this buffer (the buffers referenced by an argument buffer)
 } Buffer;
 
 typedef struct {
@@ -372,11 +378,13 @@ static PyObject *
 Device_buffer(Device* self, PyObject* args, PyObject* kwargs)
 {
     PyObject* first_arg;
+    PyObject* copy = Py_True;
+    static char* kwlist[] = {"", "copy", NULL};
 
-    if (!PyArg_ParseTuple(args, "O", &first_arg))
+    if (!PyArg_ParseTupleAndKeywords(args, kwargs, "O|O", kwlist, &first_arg, &copy))
         return NULL;
 
-    PyObject *bufferArgList = Py_BuildValue("OO", self, first_arg);
+    PyObject *bufferArgList = Py_BuildValue("OOO", self, first_arg, copy);
     PyObject *newBufferObj = PyObject_CallObject((PyObject *) &BufferType, bufferArgList);
     Py_DECREF(bufferArgList);
     return newBufferObj;
@@ -585,6 +593,9 @@ Device_arg_buffer(Device *self, PyObject *args, PyObject *kwds)
     }
     arg_buf->length = arg_buf->buf_handle.length;
     arg_buf->exports = 0;
+    // Keep the referenced buffers (and any host memory they wrap) alive while the argument buffer exists
+    Py_INCREF(arg_tuple);
+    arg_buf->refs = arg_tuple;
     arg_buf->dev_obj = self;
     Py_INCREF(self); // Cannot close device while buffer open
     return (PyObject*)arg_buf;
@@ -654,6 +665,10 @@ Buffer_modify(Buffer* self, PyObject* args, PyObject* kwargs)
 
     if (!PyArg_ParseTuple(args, "OOO", &array,&begining,&count))
         return NULL;
+    if (self->readonly) {
+        PyErr_SetString(PyExc_ValueError, "cannot modify a buffer that wraps read-only host memory");
+        return NULL;
+    }
 
     Py_buffer buffer;
     int64_t l_begining,l_count,itemsize;
@@ -705,8 +720,11 @@ static PyMethodDef Device_methods[] = {
     {"kernel", (PyCFunction) Device_kernel, METH_VARARGS,
      "Compile a kernel for this device"
     },
-    {"buffer", (PyCFunction) Device_buffer, METH_VARARGS,
-     "Create a buffer for this device"
+    {"buffer", (PyCFunction) Device_buffer, METH_VARARGS | METH_KEYWORDS,
+     "Create a buffer for this device from a length or an object exposing a buffer.\n"
+     "copy=True (default) copies the data; copy=None wraps the data without a copy when possible\n"
+     "(unified memory, contiguous, page aligned) and copies otherwise; copy=False wraps it or raises.\n"
+     "A wrapped object is kept alive by the buffer and shares its memory with the GPU."
     },
     {"init_command_buffer", (PyCFunction) Device_init_command_buffer, METH_VARARGS,
      "initialize command buffer"
@@ -742,6 +760,18 @@ static PyMethodDef Device_methods[] = {
      "batch_wait(max_inflight=0): block until at most max_inflight submitted batches are still running; raises if a batch failed"
     },
     
+    {NULL}  /* Sentinel */
+};
+
+static PyObject *
+Buffer_get_zero_copy(Buffer* self, void* closure)
+{
+    return PyBool_FromLong(self->zero_copy);
+}
+
+static PyGetSetDef Buffer_getset[] = {
+    {"zero_copy", (getter) Buffer_get_zero_copy, NULL,
+     "True if the buffer shares the memory of the object it was created from", NULL},
     {NULL}  /* Sentinel */
 };
 
@@ -915,16 +945,61 @@ Buffer_init(Buffer *self, PyObject *args, PyObject *kwds)
     // Private - can only be called via device.buffer
     Device* dev_obj;
     PyObject* length_or_buffer;
+    PyObject* copy = Py_True;
     Py_buffer buffer;
     int64_t length;
     char* src;
 
-    if (!PyArg_ParseTuple(args, "OO", &dev_obj, &length_or_buffer))
+    if (!PyArg_ParseTuple(args, "OO|O", &dev_obj, &length_or_buffer, &copy))
         return -1;
 
     if (!PyObject_TypeCheck(dev_obj, &DeviceType)) {
         mc_err(FirstArgumentNotDevice);
         return -1;
+    }
+
+    self->zero_copy = 0;
+    self->readonly = 0;
+    self->refs = NULL;
+
+    if (copy != Py_True) {
+        // Wrap the host memory without a copy: any contiguous layout, read-only if the object does not allow writes
+        int got = !PyObject_GetBuffer(length_or_buffer, &(self->host), PyBUF_ANY_CONTIGUOUS | PyBUF_WRITABLE);
+        if (!got) {
+            PyErr_Clear();
+            got = !PyObject_GetBuffer(length_or_buffer, &(self->host), PyBUF_ANY_CONTIGUOUS);
+            self->readonly = got;
+        }
+        if (!got) {
+            PyErr_Clear();
+            if (copy == Py_False) {
+                PyErr_SetString(PyExc_ValueError, "copy=False needs a contiguous object exposing a buffer");
+                return -1;
+            }
+        }
+        else if (mc_sw_buf_open_nocopy(&(dev_obj->dev_handle), self->host.len, self->host.buf, &(self->buf_handle)) == Success) {
+            self->zero_copy = 1;
+            self->length = self->host.len;
+            self->exports = 0;
+            self->dev_obj = dev_obj;
+            Py_INCREF(dev_obj); // Cannot close device while buffer open
+            return 0;
+        }
+        else {
+            // Not possible to wrap: copy from the memory already exposed (keeps any contiguous layout)
+            RetCode ret = copy == Py_False ? CannotMakeNoCopyBuffer :
+                mc_sw_buf_open(&(dev_obj->dev_handle), self->host.len, self->host.buf, &(self->buf_handle));
+            PyBuffer_Release(&(self->host));
+            self->readonly = 0;
+            if (mc_err(ret)) {
+                return -1;
+            }
+            self->length = self->buf_handle.length;
+            self->exports = 0;
+            self->dev_obj = dev_obj;
+            Py_INCREF(dev_obj); // Cannot close device while buffer open
+            return 0;
+        }
     }
 
     // Is the argument an integer length?
@@ -971,6 +1046,11 @@ Buffer_dealloc(Buffer *self)
         mc_sw_buf_close(&(self->dev_obj->dev_handle), &(self->buf_handle));
         Py_DECREF(self->dev_obj);
     }
+    // The Metal buffer is gone, so the host memory it wrapped can be released
+    if (self->zero_copy) {
+        PyBuffer_Release(&(self->host));
+    }
+    Py_XDECREF(self->refs);
     Py_TYPE(self)->tp_free((PyObject *) self);
 }
 
@@ -981,11 +1061,16 @@ Buffer_str(Buffer* self)
 }
 
 int Buffer_getbuffer(Buffer *self, Py_buffer *view, int flags) {
+    if (self->readonly && (flags & PyBUF_WRITABLE)) {
+        PyErr_SetString(PyExc_BufferError, "buffer wraps read-only host memory");
+        view->obj = NULL;
+        return -1;
+    }
     view->buf = self->buf_handle.buf;
     view->obj = (PyObject*)self;
     Py_INCREF(view->obj);
     view->len = self->buf_handle.length;
-    view->readonly = false;
+    view->readonly = self->readonly;
     view->itemsize = 1; 
     view->format = NULL; // 'B'
     view->ndim = 1;
@@ -1023,6 +1108,7 @@ static PyTypeObject BufferType = {
     .tp_str = (reprfunc) Buffer_str,
     .tp_as_buffer = &BufferProcs,
     .tp_methods = Buffer_methods,
+    .tp_getset = Buffer_getset,
 };
 
 int to_buffer(PyObject* possible_buffer, Device* dev, Buffer** buffer) {

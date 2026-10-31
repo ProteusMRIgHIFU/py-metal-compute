@@ -41,6 +41,7 @@ let BatchAlreadyOpen:RetCode = -1009
 let CommandBufferFailed:RetCode = -1010
 let CannotCreateArgumentEncoder:RetCode = -1011
 let InvalidArgumentAccess:RetCode = -1012
+let CannotMakeNoCopyBuffer:RetCode = -1013
 
 // Buffer formats
 let FormatUnknown = -1
@@ -264,11 +265,16 @@ class mc_sw_buf {
     // and how kernels access them, declared to the encoder when the argument buffer is bound
     var children:[mc_sw_buf] = []
     var usages:[MTLResourceUsage] = []
-    init(_ buf:MTLBuffer) {
+    // True when the buffer wraps host memory (bytesNoCopy); that memory is owned by the host, so it is never purged
+    let noCopy:Bool
+    init(_ buf:MTLBuffer, noCopy:Bool = false) {
         self.buf = buf
+        self.noCopy = noCopy
     }
     deinit {
-        self.buf.setPurgeableState(MTLPurgeableState.empty)
+        if !noCopy {
+            self.buf.setPurgeableState(MTLPurgeableState.empty)
+        }
     }
 }
 
@@ -528,6 +534,36 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
 
     return Success; 
 }
+// Wraps host memory in a buffer without copying (bytesNoCopy). Only possible when the GPU shares memory
+// with the CPU and the memory starts at a page boundary; otherwise returns CannotMakeNoCopyBuffer so the
+// caller can fall back to a copy. The caller must keep the host memory alive while the buffer exists.
+@_cdecl("mc_sw_buf_open_nocopy") public func mc_sw_buf_open_nocopy(
+        dev_handle: UnsafePointer<mc_dev_handle>,
+        length:Int64,
+        src: UnsafeMutableRawPointer,
+        buf_handle: UnsafeMutablePointer<mc_buf_handle>) -> RetCode {
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    let page = Int(getpagesize())
+    guard length > 0, sw_dev.dev.hasUnifiedMemory, !IsExternalGPU,
+          Int(bitPattern: src) % page == 0 else { return CannotMakeNoCopyBuffer }
+    // Cover whole pages when the allocation extends that far (malloc_size is 0 if src is not an allocation start)
+    let rounded = (Int(length) + page - 1) / page * page
+    let wrapLength = malloc_size(src) >= rounded ? rounded : Int(length)
+    guard let newBuffer = sw_dev.dev.makeBuffer(bytesNoCopy: src, length: wrapLength,
+                                                options: .storageModeShared, deallocator: nil),
+          newBuffer.contents() == src else { return CannotMakeNoCopyBuffer }
+
+    let buf = mc_sw_buf(newBuffer, noCopy: true)
+    let id = mc_next_index
+    mc_next_index += 1
+    sw_dev.bufs[id] = buf
+    buf_handle[0].id = id
+    buf_handle[0].buf = src.bindMemory(to: CChar.self, capacity: Int(length))
+    buf_handle[0].length = length
+
+    return Success
+}
+
 @_cdecl("mc_sw_buf_close") public func mc_sw_buf_close(
         dev_handle: UnsafePointer<mc_dev_handle>,
         buf_handle: UnsafeMutablePointer<mc_buf_handle>) -> RetCode {
