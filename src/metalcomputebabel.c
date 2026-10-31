@@ -44,6 +44,8 @@ const RetCode SourceMemoryInvalid = -1007;
 const RetCode BatchNotOpen = -1008;
 const RetCode BatchAlreadyOpen = -1009;
 const RetCode CommandBufferFailed = -1010;
+const RetCode CannotCreateArgumentEncoder = -1011;
+const RetCode InvalidArgumentAccess = -1012;
 
 // Python level errors
 const RetCode FirstArgumentNotDevice = -2000;
@@ -100,6 +102,8 @@ RetCode mc_err(RetCode ret) {
             case DeviceBuffersAllocated: errString = "Device closed while buffers still allocated"; break;
             case BatchNotOpen: errString = "No batch open, call batch_begin first"; break;
             case BatchAlreadyOpen: errString = "A batch is already open, call batch_commit first"; break;
+            case CannotCreateArgumentEncoder: errString = "Cannot create argument encoder"; break;
+            case InvalidArgumentAccess: errString = "Invalid access for argument buffer entry"; break;
             // Python level errors
             case FirstArgumentNotDevice: errString = "First argument should be a metalcompute.Device object"; break;
             case FirstArgumentNotKernel: errString = "First argument should be a metalcompute.Kernel object"; break;
@@ -517,6 +521,75 @@ Device_batch_begin(Device *self, PyObject *args, PyObject *kwds)
     Py_RETURN_NONE;
 }
 
+// Maps "r", "w" or "rw" to the access codes of mc_sw_argbuf_open; returns -1 if not valid
+static int64_t
+arg_access_code(PyObject* access)
+{
+    const char* str = PyUnicode_Check(access) ? PyUnicode_AsUTF8(access) : NULL;
+    if (str == NULL) return -1;
+    if (strcmp(str, "r") == 0) return 0;
+    if (strcmp(str, "w") == 0) return 1;
+    if (strcmp(str, "rw") == 0) return 2;
+    return -1;
+}
+
+static PyObject *
+Device_arg_buffer(Device *self, PyObject *args, PyObject *kwds)
+{
+    PyObject* arg_tuple;
+    PyObject* access_obj;
+
+    if (!PyArg_ParseTuple(args, "O!O", &PyTuple_Type, &arg_tuple, &access_obj)) {
+        return NULL;
+    }
+    int64_t buffer_count = (int64_t)PyTuple_Size(arg_tuple);
+    int access_is_tuple = PyTuple_Check(access_obj);
+    if (access_is_tuple && PyTuple_Size(access_obj) != buffer_count) {
+        PyErr_SetString(PyExc_ValueError, "arg_buffer expects one access per buffer");
+        return NULL;
+    }
+    const mc_buf_handle** bufs = (const mc_buf_handle**)malloc((buffer_count + 1) * sizeof(mc_buf_handle*));
+    int64_t* access = (int64_t*)malloc((buffer_count + 1) * sizeof(int64_t));
+
+    for (int i = 0; i < buffer_count; i++) {
+        PyObject* pos_buf = PyTuple_GetItem(arg_tuple, i);
+        PyObject* pos_access = access_is_tuple ? PyTuple_GetItem(access_obj, i) : access_obj;
+        if (!PyObject_TypeCheck(pos_buf, &BufferType)) {
+            free(bufs);
+            free(access);
+            PyErr_SetString(PyExc_TypeError, "arg_buffer expects a tuple of metalcompute.Buffer objects");
+            return NULL;
+        }
+        access[i] = arg_access_code(pos_access);
+        if (access[i] < 0) {
+            free(bufs);
+            free(access);
+            PyErr_SetString(PyExc_ValueError, "arg_buffer access must be \"r\", \"w\" or \"rw\"");
+            return NULL;
+        }
+        bufs[i] = &(((Buffer*)pos_buf)->buf_handle);
+    }
+
+    Buffer* arg_buf = (Buffer*)PyType_GenericNew(&BufferType, NULL, NULL);
+    if (arg_buf == NULL) {
+        free(bufs);
+        free(access);
+        return NULL;
+    }
+    RetCode ret = mc_sw_argbuf_open(&(self->dev_handle), buffer_count, bufs, access, &(arg_buf->buf_handle));
+    free(bufs);
+    free(access);
+    if (mc_err(ret)) {
+        Py_DECREF(arg_buf);
+        return NULL;
+    }
+    arg_buf->length = arg_buf->buf_handle.length;
+    arg_buf->exports = 0;
+    arg_buf->dev_obj = self;
+    Py_INCREF(self); // Cannot close device while buffer open
+    return (PyObject*)arg_buf;
+}
+
 static PyObject *
 Device_batch_dispatch(Device *self, PyObject *args, PyObject *kwds)
 {
@@ -649,6 +722,9 @@ static PyMethodDef Device_methods[] = {
     },
     {"sync_buffers", (PyCFunction) Device_sync_buffers, METH_VARARGS,
      "sync buffers"
+    },
+    {"arg_buffer", (PyCFunction) Device_arg_buffer, METH_VARARGS,
+     "arg_buffer(buffers, access): create an argument buffer holding the addresses of the tuple of buffers, for a kernel parameter declared as a struct of pointers with [[id(n)]] matching the position in the tuple. access is \"r\", \"w\" or \"rw\", for all buffers or as a tuple with one entry per buffer. The referenced buffers are kept alive and declared to the encoder when the argument buffer is bound"
     },
     {"batch_begin", (PyCFunction) Device_batch_begin, METH_VARARGS,
      "batch_begin(buffers, concurrent=False): open a command buffer with one encoder and bind the tuple of buffers (indexes 0..n-1). With concurrent=True dispatches may overlap; use batch_barrier between dependent dispatches"

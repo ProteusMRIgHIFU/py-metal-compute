@@ -39,6 +39,8 @@ let SourceMemoryInvalid:RetCode = -1007
 let BatchNotOpen:RetCode = -1008
 let BatchAlreadyOpen:RetCode = -1009
 let CommandBufferFailed:RetCode = -1010
+let CannotCreateArgumentEncoder:RetCode = -1011
+let InvalidArgumentAccess:RetCode = -1012
 
 // Buffer formats
 let FormatUnknown = -1
@@ -258,6 +260,10 @@ func get_stride(_ format: Int) -> Int {
 
 class mc_sw_buf {
     let buf:MTLBuffer
+    // For argument buffers: the buffers referenced by the argument buffer (kept alive while it exists)
+    // and how kernels access them, declared to the encoder when the argument buffer is bound
+    var children:[mc_sw_buf] = []
+    var usages:[MTLResourceUsage] = []
     init(_ buf:MTLBuffer) {
         self.buf = buf
     }
@@ -533,6 +539,87 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
     return Success
 }
 
+// Argument buffers
+// An argument buffer holds the GPU addresses of other buffers, so a kernel can receive many arrays through one
+// binding, e.g.
+//     struct Args { const device float* a [[id(0)]]; device float* b [[id(1)]]; };
+//     kernel void k(constant Args& args [[buffer(1)]], ...)
+// The entry with id(n) is the n-th buffer passed to mc_sw_argbuf_open. access[n] is 0 = read, 1 = write,
+// 2 = read and write. Buffers referenced only through an argument buffer must be declared to the encoder
+// (useResources), which is done when the argument buffer is bound in mc_sw_run_open or mc_sw_batch_begin.
+
+let ArgumentAccessRead:Int64 = 0
+let ArgumentAccessWrite:Int64 = 1
+let ArgumentAccessReadWrite:Int64 = 2
+
+@_cdecl("mc_sw_argbuf_open") public func mc_sw_argbuf_open(
+        dev_handle: UnsafePointer<mc_dev_handle>,
+        NBufs: Int,
+        buf_handles: UnsafePointer<UnsafePointer<mc_buf_handle>>,
+        access: UnsafePointer<Int64>,
+        buf_handle: UnsafeMutablePointer<mc_buf_handle>) -> RetCode {
+    guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
+    var children:[mc_sw_buf] = []
+    var usages:[MTLResourceUsage] = []
+    var descriptors:[MTLArgumentDescriptor] = []
+    for index in 0..<NBufs {
+        guard let child = sw_dev.bufs[buf_handles[index][0].id] else { return BufferNotFound }
+        let descriptor = MTLArgumentDescriptor()
+        descriptor.dataType = .pointer
+        descriptor.index = index
+        switch access[index] {
+        case ArgumentAccessRead:
+            descriptor.access = .readOnly
+            usages.append(.read)
+        case ArgumentAccessWrite:
+            descriptor.access = .writeOnly
+            usages.append(.write)
+        case ArgumentAccessReadWrite:
+            descriptor.access = .readWrite
+            usages.append([.read, .write])
+        default:
+            return InvalidArgumentAccess
+        }
+        descriptors.append(descriptor)
+        children.append(child)
+    }
+    guard let argEncoder = sw_dev.dev.makeArgumentEncoder(arguments: descriptors) else { return CannotCreateArgumentEncoder }
+    let length = max(argEncoder.encodedLength, 16)
+    guard let argBuffer = sw_dev.dev.makeBuffer(length: length, options: DefaultBufferMode) else { return CouldNotMakeBuffer }
+    argEncoder.setArgumentBuffer(argBuffer, offset: 0)
+    for index in 0..<NBufs {
+        argEncoder.setBuffer(children[index].buf, offset: 0, index: index)
+    }
+    if IsExternalGPU {
+        argBuffer.didModifyRange(0..<length)
+    }
+
+    let buf = mc_sw_buf(argBuffer)
+    buf.children = children
+    buf.usages = usages
+    let id = mc_next_index
+    mc_next_index += 1
+    sw_dev.bufs[id] = buf
+    buf_handle[0].id = id
+    buf_handle[0].buf = argBuffer.contents().bindMemory(to: CChar.self, capacity: length)
+    buf_handle[0].length = Int64(length)
+    return Success
+}
+
+// Declares to the encoder the buffers referenced by an argument buffer, grouped by usage
+func use_argument_resources(_ encoder:MTLComputeCommandEncoder, _ sw_buf:mc_sw_buf) {
+    if sw_buf.children.isEmpty { return }
+    for usage in [MTLResourceUsage.read, MTLResourceUsage.write, [MTLResourceUsage.read, MTLResourceUsage.write]] {
+        var resources:[MTLResource] = []
+        for (child, childUsage) in zip(sw_buf.children, sw_buf.usages) where childUsage == usage {
+            resources.append(child.buf)
+        }
+        if !resources.isEmpty {
+            encoder.useResources(resources, usage: usage)
+        }
+    }
+}
+
 @_cdecl("mc_sw_init_command_buffer") public func mc_sw_init_command_buffer(dev_handle: UnsafePointer<mc_dev_handle>)->RetCode{
     guard let sw_dev = mc_devs[dev_handle[0].id] else { return DeviceNotFound }
     single_commandBuffer = sw_dev.queue.makeCommandBuffer()!
@@ -570,6 +657,7 @@ var mc_cbs:[Int64:mc_sw_cb] = [:]
         guard let buf_index = run_handle[0].bufs[index] else { return BufferNotFound }
         guard let sw_buf = sw_dev.bufs[buf_index[0].id] else { return BufferNotFound }
         encoder.setBuffer(sw_buf.buf, offset: 0, index: index)
+        use_argument_resources(encoder, sw_buf)
     }
 
     let w = pipelineState.threadExecutionWidth
@@ -628,6 +716,7 @@ var batch_inflight:[MTLCommandBuffer] = []
             return BufferNotFound
         }
         encoder.setBuffer(sw_buf.buf, offset: 0, index: index)
+        use_argument_resources(encoder, sw_buf)
     }
     batch_commandBuffer = commandBuffer
     batch_encoder = encoder

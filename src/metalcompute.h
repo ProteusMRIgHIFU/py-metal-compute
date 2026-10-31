@@ -84,3 +84,7 @@ RetCode mc_sw_batch_dispatch(const mc_dev_handle* dev_handle, const mc_kern_hand
 RetCode mc_sw_batch_barrier(const mc_dev_handle* dev_handle);
 RetCode mc_sw_batch_commit(const mc_dev_handle* dev_handle);
 RetCode mc_sw_batch_wait(const mc_dev_handle* dev_handle, int64_t max_inflight);
+
+// Argument buffers: one buffer holding the addresses of nBufs buffers (access: 0 = read, 1 = write, 2 = read and write)
+RetCode mc_sw_argbuf_open(const mc_dev_handle* dev_handle, int64_t nBufs, const mc_buf_handle** buf_handle,
+                     const int64_t* access, mc_buf_handle* arg_buf_handle);
